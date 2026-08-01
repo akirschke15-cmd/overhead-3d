@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overhead 3D — Ceiling</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/"
+      }
+    }
+  </script>
+</head>
+<body class="ceiling">
+  <canvas id="sky"></canvas>
+
+  <div id="c-status" class="c-panel">
+    <div class="mode" id="c-mode">connecting…</div>
+    <div class="sub" id="c-sub"></div>
+    <div class="keys">&larr;&rarr; rotate · +/&minus; field · M mirror · T labels · C compass · G grid · L live/sim · 1/2/3 sim speed · F fullscreen · H hide UI</div>
+  </div>
+
+  <div id="c-bar" class="c-panel">
+    <button class="btn" data-rot="-15" title="Rotate -15°">⟲15°</button>
+    <button class="btn" data-rot="-2" title="Rotate -2°">−2°</button>
+    <button class="btn" data-rot="2" title="Rotate +2°">+2°</button>
+    <button class="btn" data-rot="15" title="Rotate +15°">⟳15°</button>
+    <span class="sep"></span>
+    <button class="btn" data-field="-5" title="Narrower field">Field −</button>
+    <button class="btn" data-field="5" title="Wider field">Field +</button>
+    <span class="sep"></span>
+    <button class="btn" id="c-mirror" title="Mirror image left-right">Mirror</button>
+    <button class="btn" id="c-labels" title="Toggle callsign labels">Labels</button>
+    <button class="btn" id="c-compass" title="Toggle compass rings">Compass</button>
+    <button class="btn" id="c-grid" title="Projector calibration grid">Grid</button>
+    <span class="sep"></span>
+    <button class="btn mode" id="c-modebtn">⇣ Go Sim</button>
+    <button class="btn" id="c-fs" title="Fullscreen">⛶</button>
+    <a class="btn" href="index.html" title="Back to 3D view">3D ↩</a>
+  </div>
+
+  <script type="module" src="js/ceiling.js"></script>
+</body>
+</html>

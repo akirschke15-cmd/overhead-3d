@@ -1,0 +1,30 @@
+# Overhead 3D
+
+Real-time visualization of the aircraft overhead — Reston/Arlington, VA by default.
+
+- `index.html` — hi-res 3D recreation of ADS-B "overhead" timelapses (simulated traffic + live mode)
+- `ceiling.html` — zenith all-sky view for a ceiling-mounted projector: the planes currently
+  inside the cone of sky above you, live ADS-B by default
+
+Live data: [airplanes.live](https://airplanes.live) (fetched client-side, no API key).
+No build step — plain ES modules with vendored three.js.
+
+## Run locally
+
+```
+python -m http.server 8000
+# open http://127.0.0.1:8000/  (or /ceiling.html)
+```
+
+## Ceiling-mode URL params
+
+`ceiling.html?lat=38.84&lon=-77.09&rot=12&field=50&mirror=1&mode=sim`
+
+- `lat`/`lon` — center the sky on this observer (default: Arlington, VA 22206)
+- `rot` — rotate screen north to match your room, degrees
+- `field` — zenith angle mapped to the screen edge, degrees (20–80)
+- `mirror=1` — mirror the image left/right
+- `mode=sim` — start in simulation instead of live
+
+Keys: arrows/+/- calibrate · `M` mirror · `T` labels · `C` compass · `G` grid ·
+`L` live/sim · `F` fullscreen · `H` hide UI. Calibration persists in localStorage.
