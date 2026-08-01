@@ -91,25 +91,45 @@ function flyTo(preset) {
 let recorder = null;
 let recordedChunks = [];
 const recordBtn = document.getElementById('btn-record');
+// mp4/h264 plays natively on Windows & Safari; webm for everyone else
+const REC_TYPES = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+function pickRecType() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  return REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t)) || null;
+}
+function flashRecord(msg) {
+  recordBtn.textContent = msg;
+  setTimeout(() => { recordBtn.textContent = '● Record'; }, 1600);
+}
 function toggleRecord() {
   if (recorder) {
     recorder.stop();
     return;
   }
-  const stream = renderer.domElement.captureStream(60);
-  recorder = new MediaRecorder(stream, {
-    mimeType: 'video/webm;codecs=vp9',
-    videoBitsPerSecond: 40_000_000,
-  });
+  const mime = pickRecType();
+  if (!mime) { flashRecord('⚠ unsupported'); return; }
+  try {
+    recorder = new MediaRecorder(renderer.domElement.captureStream(60), {
+      mimeType: mime,
+      videoBitsPerSecond: 40_000_000,
+    });
+  } catch {
+    recorder = null;
+    flashRecord('⚠ unsupported');
+    return;
+  }
   recordedChunks = [];
   recorder.ondataavailable = (e) => e.data.size && recordedChunks.push(e.data);
   recorder.onstop = () => {
-    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const blob = new Blob(recordedChunks, { type: mime });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'overhead-3d.webm';
+    a.href = url;
+    a.download = mime.includes('mp4') ? 'overhead-3d.mp4' : 'overhead-3d.webm';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000); // let the download finish first
     recorder = null;
     recordBtn.textContent = '● Record';
     recordBtn.classList.remove('recording');
