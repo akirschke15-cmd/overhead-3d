@@ -438,6 +438,29 @@ document.querySelectorAll('[data-field]').forEach((b) =>
   b.addEventListener('click', () => bumpField(Number(b.dataset.field))));
 modeBtn.addEventListener('click', () => setMode(mode === 'live' ? 'sim' : 'live'));
 
+// "Center on me": reload with ?lat=&lon= from the browser; rot/mirror/field survive via localStorage.
+const meBtn = document.getElementById('c-me');
+meBtn.addEventListener('click', () => {
+  const reset = (msg) => {
+    meBtn.disabled = false;
+    meBtn.textContent = msg;
+    setTimeout(() => { meBtn.textContent = '⌖ Center on me'; }, 1600);
+  };
+  if (!navigator.geolocation) { reset('⌖ unavailable'); return; }
+  meBtn.disabled = true;
+  meBtn.textContent = '⌖ locating…';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const q = new URLSearchParams(location.search);
+      q.set('lat', pos.coords.latitude.toFixed(5));
+      q.set('lon', pos.coords.longitude.toFixed(5));
+      location.search = q.toString();
+    },
+    () => reset('⌖ denied'), // permission refused — the Arlington default stays
+    { timeout: 10000, maximumAge: 300000 }
+  );
+});
+
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => {});

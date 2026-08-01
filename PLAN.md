@@ -13,7 +13,7 @@ key, no server-side rate limit — static hosting is the whole job.
 - [x] Enable GitHub Pages from `main` root
       - 3D view:     https://akirschke15-cmd.github.io/overhead-3d/
       - Ceiling mode: https://akirschke15-cmd.github.io/overhead-3d/ceiling.html
-- [ ] Add a "⌖ Center on me" geolocation button (ceiling view first) so visitors can
+- [x] Add a "⌖ Center on me" geolocation button (ceiling view first) so visitors can
       center the sky on their own location; falls back to the Arlington default when
       permission is denied. Same ?lat=&lon= URL params the page already reads.
 - [ ] Publish a pre-calibrated ceiling link for fixed screens using the existing URL
