@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { CENTER, MI_PER_DEG_LAT, MI_PER_DEG_LON, FT_PER_MI } from './geo.js';
 import { Traffic } from './traffic.js';
+import { classOf, SILHOUETTES } from './classes.js';
 
 // ---------- observer & URL params ----------
 const params = new URLSearchParams(location.search);
@@ -45,33 +46,21 @@ window.addEventListener('resize', resize);
 resize();
 
 const MAX_ZEN = (85 * Math.PI) / 180; // don't try to draw the horizon itself
+const TRAIL_POINTS = 44;
+const LABEL_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace';
 const STATUS_RGB = { level: '77,163,255', climb: '63,220,151', descend: '255,167,51' };
 
-// top-down jet silhouette (nose = -y, ~22px wingspan at scale 1)
-const PLANE = new Path2D();
-PLANE.moveTo(0, -11);
-PLANE.quadraticCurveTo(1.4, -8, 1.6, -3.5);
-PLANE.lineTo(1.8, -1.8);
-PLANE.lineTo(10.2, 3.2);   // right wing leading edge
-PLANE.lineTo(10.2, 4.6);   // wingtip
-PLANE.lineTo(2.0, 4.3);    // trailing edge back to fuselage
-PLANE.lineTo(1.7, 6.0);
-PLANE.lineTo(4.8, 9.4);    // right stabilizer
-PLANE.lineTo(4.8, 10.3);
-PLANE.lineTo(1.0, 9.3);
-PLANE.lineTo(0.7, 10.4);   // tail cone
-PLANE.lineTo(-0.7, 10.4);
-PLANE.lineTo(-1.0, 9.3);
-PLANE.lineTo(-4.8, 10.3);
-PLANE.lineTo(-4.8, 9.4);
-PLANE.lineTo(-1.7, 6.0);
-PLANE.lineTo(-2.0, 4.3);
-PLANE.lineTo(-10.2, 4.6);
-PLANE.lineTo(-10.2, 3.2);
-PLANE.lineTo(-1.8, -1.8);
-PLANE.lineTo(-1.6, -3.5);
-PLANE.quadraticCurveTo(-1.4, -8, 0, -11);
-PLANE.closePath();
+// Top-down silhouette per aircraft class (nose = -y, ~22px narrowbody wingspan at scale 1).
+// classes.js holds the right half of each outline; mirror it to close the shape.
+const GLYPHS = {};
+for (const [cls, half] of Object.entries(SILHOUETTES)) {
+  const path = new Path2D();
+  half.forEach(([x, y], i) => (i ? path.lineTo(x, y) : path.moveTo(x, y)));
+  for (let i = half.length - 1; i >= 0; i--) path.lineTo(-half[i][0], half[i][1]);
+  path.closePath();
+  GLYPHS[cls] = path;
+}
+const ROTOR_RADIUS = 9;
 
 // base north-up coords -> calibrated screen coords relative to center (mirror, then rotate)
 function toScreen(sx, sy, out) {
@@ -125,6 +114,8 @@ function ingestLive(list) {
     const altFt =
       typeof ac.alt_baro === 'number' ? ac.alt_baro : typeof ac.alt_geom === 'number' ? ac.alt_geom : 0;
     const cs = (ac.flight || '').trim() || (ac.hex || '').toUpperCase();
+    const altKnown = typeof ac.alt_baro === 'number' || typeof ac.alt_geom === 'number';
+    const type = typeof ac.t === 'string' && ac.t.trim() ? ac.t.trim() : null;
     const e = liveMap.get(ac.hex);
     if (!e) {
       liveMap.set(ac.hex, {
@@ -134,7 +125,7 @@ function ingestLive(list) {
         vLat: 0, vLon: 0, vAlt: 0,                 // velocity for dead reckoning
         hd: typeof ac.track === 'number' ? ac.track : 0,  // rendered heading (smoothed)
         tHd: typeof ac.track === 'number' ? ac.track : 0, // reported heading
-        vrate: 0, status: 'level', cs,
+        vrate: 0, status: 'level', cs, type, altKnown, cls: classOf(type, ac.category),
         lastSeen: now, t0: now, tReport: now, trail: [],
       });
       continue;
@@ -165,6 +156,8 @@ function ingestLive(list) {
     if (typeof ac.baro_rate === 'number') e.vrate += (ac.baro_rate - e.vrate) * 0.4;
     else e.vrate *= 0.8; // decay toward level when the feed stops reporting a rate
     e.cs = cs;
+    e.type = type;
+    e.altKnown = altKnown;
     e.lastSeen = now;
   }
   for (const [hex, e] of liveMap) {
@@ -215,7 +208,7 @@ function gatherLive() {
     items.push({
       east: (e.lon - OBS.lon) * MI_PER_DEG_LON_OBS,
       north: (e.lat - OBS.lat) * MI_PER_DEG_LAT,
-      altFt: e.altFt, trackDeg: e.hd, cs: e.cs, status: e.status, trail: e.trail,
+      altFt: e.altFt, trackDeg: e.hd, cs: e.cs, type: e.type, cls: e.cls, altKnown: e.altKnown, status: e.status, trail: e.trail,
     });
   }
   return items;
@@ -224,7 +217,7 @@ function gatherLive() {
 // ---------- simulated traffic (reused from the 3D app, never rendered in 3D) ----------
 const simScene = new THREE.Group();
 const simCam = new THREE.PerspectiveCamera(); // trails billboard toward this; harmless offscreen
-const traffic = new Traffic(simScene);
+const traffic = new Traffic(simScene, { visual: false });
 const SIM_SPEEDS = [1, 15, 60];
 let speedIndex = 1; // 15x
 const obsOffE = (OBS.lon - CENTER.lon) * MI_PER_DEG_LON;
@@ -239,7 +232,7 @@ function gatherSim() {
       north: -ac.pos.z - obsOffN,
       altFt: ac.altFt,
       trackDeg: (180 - (ac.yaw * 180) / Math.PI + 360) % 360, // mesh yaw -> compass track
-      cs: ac.callsign, status: ac.status, trail: ac._ceilTrail,
+      cs: ac.callsign, type: ac.info.type, cls: ac.info.cls, altKnown: true, status: ac.status, trail: ac._ceilTrail,
     });
   }
   return items;
@@ -338,27 +331,41 @@ function drawSky(items) {
     inView++;
     const rgb = STATUS_RGB[it.status] || STATUS_RGB.level;
 
-    // trail of recent screen positions
+    // trail of recent screen positions, drawn as one ribbon that tapers and fades to the tail
     const tr = it.trail;
     const lp = tr[tr.length - 1];
     if (!lp || Math.hypot(p.x - lp.x, p.y - lp.y) > 1.5) {
       tr.push({ x: p.x, y: p.y });
-      if (tr.length > 26) tr.shift();
+      if (tr.length > TRAIL_POINTS) tr.shift();
     }
-    if (tr.length > 1) {
-      ctx.lineWidth = 1.5;
-      for (let i = 1; i < tr.length; i++) {
-        ctx.strokeStyle = `rgba(${rgb},${((i / tr.length) * 0.4).toFixed(3)})`;
-        ctx.beginPath();
-        ctx.moveTo(tr[i - 1].x, tr[i - 1].y);
-        ctx.lineTo(tr[i].x, tr[i].y);
-        ctx.stroke();
-      }
-    }
-
-    // jet silhouette rotated to its (smoothed) heading, sized by altitude
     const dr = Math.max(3, 9 - it.altFt / 6000); // lower = closer to the eye = bigger
     const s = dr / 7;
+    if (tr.length > 2) {
+      const tail = tr[0];
+      const head = tr[tr.length - 1];
+      const grad = ctx.createLinearGradient(tail.x, tail.y, head.x, head.y);
+      grad.addColorStop(0, `rgba(${rgb},0)`);
+      grad.addColorStop(1, `rgba(${rgb},0.55)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      // out along one edge and back along the other; width grows from 0 at the tail
+      for (let pass = 0; pass < 2; pass++) {
+        for (let k = 0; k < tr.length; k++) {
+          const i = pass ? tr.length - 1 - k : k;
+          const a = tr[Math.max(0, i - 1)];
+          const b = tr[Math.min(tr.length - 1, i + 1)];
+          const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+          const w = (i / (tr.length - 1)) * 1.6 * s * (pass ? -1 : 1);
+          const x = tr[i].x - ((b.y - a.y) / len) * w;
+          const y = tr[i].y + ((b.x - a.x) / len) * w;
+          if (pass === 0 && k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // class silhouette rotated to its (smoothed) heading, sized by altitude
     const glyphR = s * 11;
     const hv = headingVec(it.trackDeg);
     ctx.save();
@@ -367,17 +374,32 @@ function drawSky(items) {
     ctx.scale(s, s);
     ctx.fillStyle = `rgb(${rgb})`;
     ctx.shadowColor = `rgb(${rgb})`;
-    ctx.shadowBlur = 12;
-    ctx.fill(PLANE);
-    ctx.restore();
+    ctx.shadowBlur = 10;
+    ctx.fill(GLYPHS[it.cls] || GLYPHS.narrow);
     ctx.shadowBlur = 0;
+    if (it.cls === 'heli') {
+      ctx.strokeStyle = `rgba(${rgb},0.7)`;
+      ctx.lineWidth = 1 / s;
+      ctx.beginPath();
+      ctx.arc(0, 0, ROTOR_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
 
-    // label
+    // label: callsign and type, altitude beneath
     if (cal.labels) {
-      ctx.font = '600 11px "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+      const lx = Math.round(p.x + glyphR + 7);
+      const ly = Math.round(p.y - glyphR - 2);
       ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(214,226,238,0.8)';
-      ctx.fillText(`${it.cs} · ${Math.round(it.altFt).toLocaleString('en-US')} ft`, p.x + glyphR + 7, p.y - glyphR - 4);
+      ctx.font = `600 11px ${LABEL_FONT}`;
+      ctx.fillStyle = 'rgba(214,226,238,0.9)';
+      ctx.fillText(it.cs, lx, ly);
+      const csW = ctx.measureText(it.cs).width;
+      ctx.font = `500 10px ${LABEL_FONT}`;
+      ctx.fillStyle = 'rgba(150,168,190,0.75)';
+      if (it.type) ctx.fillText(it.type, lx + csW + 6, ly);
+      // no reported altitude: the glyph is placed as if on the ground, and the label says so with a dash
+      ctx.fillText(it.altKnown ? `${Math.round(it.altFt).toLocaleString('en-US')} ft` : '— ft', lx, ly + 12);
     }
   }
   return inView;

@@ -2,7 +2,8 @@
 
 Real-time visualization of the aircraft overhead — Reston/Arlington, VA by default.
 
-- `index.html` — hi-res 3D recreation of ADS-B "overhead" timelapses (simulated traffic + live mode)
+- `index.html` — 3D instrument view: vector basemap, altitude aids, class-specific aircraft,
+  click-to-inspect, and a HUD that reports feed health (simulated traffic + live mode)
 - `ceiling.html` — zenith all-sky view for a ceiling-mounted projector: the planes currently
   inside the cone of sky above you, live ADS-B by default
 
@@ -15,6 +16,26 @@ No build step — plain ES modules with vendored three.js.
 python -m http.server 8000
 # open http://127.0.0.1:8000/  (or /ceiling.html)
 ```
+
+## 3D view
+
+`index.html?mode=live&view=top` — `mode=live` starts on the live feed; `view` is `cinematic`, `top` or `low`.
+
+Keys: click an aircraft to inspect · `Esc` clear · `T` follow · `1`/`2`/`3` views · space pause ·
+`+`/`-` sim speed · `L` live/sim · `F` tags · `R` record.
+
+Altitude is drawn at 2x. A field the feed did not send is shown as a dash, never as a number.
+
+## Basemap
+
+`data/basemap.json` is baked once from Natural Earth 10m and OurAirports (both public domain) and
+committed. The site only fetches it. To rebake:
+
+```
+python3 tools/bake_basemap.py --src /tmp/basemap-src --download
+```
+
+The 3D view is baked for the DC region; ceiling mode can be centered anywhere.
 
 ## Ceiling-mode URL params
 
