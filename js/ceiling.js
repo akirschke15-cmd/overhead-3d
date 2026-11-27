@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { CENTER, MI_PER_DEG_LAT, MI_PER_DEG_LON, FT_PER_MI } from './geo.js';
 import { Traffic } from './traffic.js';
 import { classOf, SILHOUETTES } from './classes.js';
+import { FeedPoller } from './feed.js';
 
 // ---------- observer & URL params ----------
 const params = new URLSearchParams(location.search);
@@ -100,11 +101,8 @@ function headingVec(trackDeg) {
 const LIVE_RADIUS_NM = 30;
 const LIVE_URL = `https://api.airplanes.live/v2/point/${OBS.lat}/${OBS.lon}/${LIVE_RADIUS_NM}`;
 const POLL_MS = 5000;
-const ERROR_RETRY_MS = 8000;
 const STALE_MS = 20000;
 const liveMap = new Map(); // hex -> live aircraft
-let feedOk = null; // null = no poll yet
-let liveTimer = null;
 
 function ingestLive(list) {
   const now = performance.now();
@@ -165,25 +163,9 @@ function ingestLive(list) {
   }
 }
 
-async function pollLive() {
-  try {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 10000);
-    const res = await fetch(LIVE_URL, { signal: ctrl.signal });
-    clearTimeout(to);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    ingestLive(data.ac || []);
-    feedOk = true;
-    liveTimer = setTimeout(pollLive, POLL_MS);
-  } catch {
-    feedOk = false;
-    liveTimer = setTimeout(pollLive, ERROR_RETRY_MS);
-  }
-}
-
-function startLive() { if (!liveTimer) pollLive(); }
-function stopLive() { clearTimeout(liveTimer); liveTimer = null; }
+const poller = new FeedPoller(LIVE_URL, POLL_MS, (data) => ingestLive(data.ac || []));
+const startLive = () => poller.start();
+const stopLive = () => poller.stop();
 
 // Deadline interpolation + dead reckoning: glide from the last rendered position to
 // each new report over one poll interval, then keep drifting along the estimated
@@ -426,9 +408,9 @@ function updateStatus() {
   const tracked = mode === 'live' ? liveMap.size : traffic.count;
   if (mode === 'live') {
     const feed =
-      feedOk === null ? 'connecting…'
-      : feedOk ? '<span class="live-ok">● feed ok</span>'
-      : '<span class="live-err">● feed error — press L for sim</span>';
+      poller.ok === null ? 'connecting…'
+      : poller.ok ? '<span class="live-ok">● feed ok</span>'
+      : `<span class="live-err">● feed unreachable — retry in ${Math.max(0, Math.ceil((poller.health.nextPollAt - performance.now()) / 1000))} s — press L for sim</span>`;
     modeEl.innerHTML = `LIVE · ${inView} in sky · ${tracked} tracked · ${feed}`;
   } else {
     modeEl.textContent = `SIM · ${SIM_SPEEDS[speedIndex]}× · ${inView} in sky · ${tracked} total`;
