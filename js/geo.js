@@ -80,3 +80,16 @@ export function buildDashedRing(radiusMi, dashMi = 1.4, gapMi = 0.9, widthMi = 0
   geo.setIndex(indices);
   return geo;
 }
+
+// Baked basemap coordinates are flat [lon, lat, lon, lat, ...]; the ribbon builders take pairs.
+export function flatToLatLon(flat) {
+  const out = [];
+  for (let i = 0; i < flat.length; i += 2) out.push([flat[i + 1], flat[i]]);
+  return out;
+}
+
+/** Statute miles and true bearing (0-360) of a world position from the center. */
+export function distBearing(pos) {
+  const brg = (Math.atan2(pos.x, -pos.z) * 180) / Math.PI;
+  return { mi: Math.hypot(pos.x, pos.z), brg: (brg + 360) % 360 };
+}

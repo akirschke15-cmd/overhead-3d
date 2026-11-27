@@ -1,4 +1,6 @@
-// FlightTag: floating label showing callsign, altitude and speed, tinted by vertical status
+// FlightTag: controller-style data block. Line one is callsign and type; line two is
+// altitude in hundreds of feet with a climb or descent arrow, then ground speed.
+// Drawn as an in-canvas sprite (not DOM) so it appears in recordings.
 import * as THREE from 'three';
 
 export let TAGS_VISIBLE = true;
@@ -6,88 +8,100 @@ export function setTagsVisible(v) {
   TAGS_VISIBLE = v;
 }
 
-const STATUS_HEX = { level: '#4da3ff', climb: '#3fdc97', descend: '#ffa733' };
+export const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", "Roboto Mono", monospace';
+export const DASH = '—';
+const ARROWS = { level: ' ', climb: '↑', descend: '↓' };
+const ACCENT = { level: '#4da3ff', climb: '#3fdc97', descend: '#ffa733' };
+// Kept under the bloom threshold so glyphs stay sharp.
+const TEXT = '#cfd9e3';
+const TEXT_DIM = '#8494a4';
+const TEXT_ALERT = '#ff6b6b';
+
+export const TAG_LIFT = 0.95; // world units from the aircraft up to the block's lower-left corner
+const W = 256;
+const H = 92;
+const SCALE = 4.4;
+
+/** Altitude in hundreds of feet, three digits, as on a radar scope. */
+export function flightLevel(altFt) {
+  return altFt == null ? '---' : String(Math.max(0, Math.round(altFt / 100))).padStart(3, '0');
+}
 
 export class FlightTag {
   constructor(parent) {
     this.canvas = document.createElement('canvas');
-    this.canvas.width = 280;
-    this.canvas.height = 72;
+    this.canvas.width = W;
+    this.canvas.height = H;
     this.ctx = this.canvas.getContext('2d');
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.sprite = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: this.texture, transparent: true, depthWrite: false })
+      new THREE.SpriteMaterial({ map: this.texture, transparent: true, depthWrite: false, depthTest: false })
     );
-    this.sprite.scale.set(4.5, 1.16, 1);
-    this.sprite.renderOrder = 3;
+    this.sprite.center.set(0, 0); // anchored at its lower-left corner, where the leader ends
+    this.sprite.scale.set(SCALE, (SCALE * H) / W, 1);
+    this.sprite.renderOrder = 6;
     parent.add(this.sprite);
 
-    this.callsign = '';
-    this.altFt = 0;
-    this.kts = 0;
-    this.status = 'level';
-    this._dirty = true;
+    this.compact = false; // callsign only; main.js sets this from camera distance
+    this._key = '';
+    this._drawnKey = null;
     this._lastDraw = -Infinity;
   }
 
-  set(callsign, altFt, kts, status) {
-    if (
-      callsign !== this.callsign ||
-      Math.abs(altFt - this.altFt) >= 400 ||
-      Math.abs(kts - this.kts) >= 15 ||
-      status !== this.status
-    ) {
-      this.callsign = callsign;
-      this.altFt = altFt;
-      this.kts = kts;
-      this.status = status;
-      this._dirty = true;
-    }
+  /** @param {import('./aircraft.js').AircraftInfo} info */
+  set(info) {
+    const alt = info.altBaro ?? info.altGeom;
+    // Quantized so a block redraws when what it prints changes, not every frame.
+    this._key = [
+      info.callsign, info.type, flightLevel(alt), info.gs == null ? '' : Math.round(info.gs / 5),
+      info.status, info.emergency, this.compact,
+    ].join('|');
+    this._info = info;
   }
 
   follow(pos, nowMs) {
-    this.sprite.position.set(pos.x, pos.y + 1.25, pos.z);
+    this.sprite.position.set(pos.x, pos.y + TAG_LIFT, pos.z);
     this.sprite.visible = TAGS_VISIBLE;
-    if (this._dirty && nowMs - this._lastDraw > 600) {
+    if (this._key !== this._drawnKey && nowMs - this._lastDraw > 400) {
       this._draw();
-      this._dirty = false;
+      this._drawnKey = this._key;
       this._lastDraw = nowMs;
     }
   }
 
   _draw() {
-    const ctx = this.ctx;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    ctx.clearRect(0, 0, w, h);
+    const { ctx } = this;
+    const info = this._info;
+    const alert = info.emergency;
+    ctx.clearRect(0, 0, W, H);
+    ctx.textBaseline = 'alphabetic';
 
-    // pill background
-    ctx.fillStyle = 'rgba(3,6,10,0.55)';
-    ctx.beginPath();
-    ctx.roundRect(2, 10, w - 4, h - 20, 9);
-    ctx.fill();
+    ctx.font = `700 ${this.compact ? 34 : 30}px ${MONO}`;
+    const callW = ctx.measureText(info.callsign).width;
+    const line2 = `${flightLevel(info.altBaro ?? info.altGeom)}${ARROWS[info.status]} ${info.gs == null ? '---' : String(Math.round(info.gs)).padStart(3, '0')}`;
+    ctx.font = `500 22px ${MONO}`;
+    const typeW = this.compact ? 0 : ctx.measureText(info.type || DASH).width + 12;
+    ctx.font = `600 27px ${MONO}`;
+    const boxW = Math.min(W, Math.max(callW + typeW, this.compact ? 0 : ctx.measureText(line2).width) + 22);
+    const top = this.compact ? H - 46 : 4;
 
-    // status dot
-    const color = STATUS_HEX[this.status] || STATUS_HEX.level;
-    ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 6;
-    ctx.beginPath();
-    ctx.arc(17, h / 2, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(3,6,10,0.62)';
+    ctx.fillRect(0, top, boxW, H - top);
+    ctx.fillStyle = alert ? TEXT_ALERT : ACCENT[info.status];
+    ctx.fillRect(0, top, 4, H - top); // status bar on the leader side
 
-    // callsign
-    ctx.font = '700 25px "Segoe UI", "Helvetica Neue", Arial, sans-serif';
-    ctx.fillStyle = '#dce6f0';
-    ctx.fillText(this.callsign, 30, 34);
-
-    // altitude · speed
-    ctx.font = '500 19px "Segoe UI", "Helvetica Neue", Arial, sans-serif';
-    ctx.fillStyle = '#93a4b4';
-    ctx.fillText(`${Math.round(this.altFt).toLocaleString('en-US')} ft · ${Math.round(this.kts)} kt`, 30, 58);
-
+    ctx.font = `700 ${this.compact ? 34 : 30}px ${MONO}`;
+    ctx.fillStyle = alert ? TEXT_ALERT : TEXT;
+    ctx.fillText(info.callsign, 13, this.compact ? H - 12 : 38);
+    if (!this.compact) {
+      ctx.font = `500 22px ${MONO}`;
+      ctx.fillStyle = alert ? TEXT_ALERT : TEXT_DIM;
+      ctx.fillText(info.type || DASH, 13 + callW + 12, 38);
+      ctx.font = `600 27px ${MONO}`;
+      ctx.fillStyle = alert ? TEXT_ALERT : TEXT;
+      ctx.fillText(line2, 13, 76);
+    }
     this.texture.needsUpdate = true;
   }
 
