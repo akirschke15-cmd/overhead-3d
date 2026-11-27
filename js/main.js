@@ -178,7 +178,7 @@ function setMode(next) {
   modeBtn.textContent = isLive ? '⇣ Go Sim' : '⇡ Go Live';
   modeBtn.classList.toggle('live', isLive);
   subtitleEl.textContent = isLive
-    ? 'LIVE · 50 mi around Arlington, VA (22206) · airborne only · ADS-B airplanes.live'
+    ? 'LIVE · 50 mi around Arlington, VA (22206) · airborne only'
     : '50 mi around Arlington, VA (22206) · airborne only';
   speedBtns.forEach((b) => (b.disabled = isLive));
   pauseBtn.disabled = isLive;
