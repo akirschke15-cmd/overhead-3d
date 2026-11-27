@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Overhead 3D — Reston, VA</title>
+  <title>Overhead 3D — Arlington, VA</title>
   <link rel="stylesheet" href="css/style.css" />
   <script type="importmap">
     {
@@ -14,39 +14,68 @@
     }
   </script>
 </head>
-<body>
+<body class="instrument">
   <div id="app"></div>
-  <div class="vignette"></div>
 
-  <header class="hud hud-header">
-    <div class="title"><span class="plane-icon">✈</span> Overhead <span class="badge">3D</span></div>
-    <div class="subtitle" id="hud-subtitle">50 mi around Arlington, VA (22206) · airborne only</div>
+  <header id="topbar" class="bar">
+    <div class="brand">OVERHEAD <span class="badge">3D</span></div>
+    <span id="hud-mode" class="chip chip-sim">SIM</span>
+    <div class="clock"><span id="hud-time">--:--:--</span><span id="hud-date" class="dim"></span></div>
+    <div class="stat"><span class="k">Aircraft</span><b id="hud-count">0</b></div>
+    <div id="hud-feed" class="feed feed-off" aria-label="Feed health">
+      <span class="feed-dot"></span>
+      <div class="stat"><span class="k">Poll</span><b id="feed-poll">—</b></div>
+      <div class="stat"><span class="k">Data age</span><b id="feed-age">—</b></div>
+      <div class="stat"><span class="k">Errors</span><b id="feed-errors">—</b></div>
+    </div>
+    <div class="spacer"></div>
+    <div id="hud-subtitle" class="dim">50 mi around Arlington, VA (22206) · airborne only</div>
   </header>
 
-  <aside class="hud hud-legend">
-    <div class="row"><span class="dot level"></span> Level</div>
-    <div class="row"><span class="dot climb"></span> Climbing <span class="arrow">↑</span></div>
-    <div class="row"><span class="dot descend"></span> Descending <span class="arrow">↓</span></div>
+  <div id="banner" role="alert" hidden></div>
+
+  <aside id="rail-left" class="rail">
+    <h2>Vertical state</h2>
+    <div class="legend">
+      <div class="row"><span class="dot level"></span> Level <b id="n-level">0</b></div>
+      <div class="row"><span class="dot climb"></span> Climbing ↑ <b id="n-climb">0</b></div>
+      <div class="row"><span class="dot descend"></span> Descending ↓ <b id="n-descend">0</b></div>
+    </div>
+    <h2>By altitude</h2>
+    <div id="alt-bands"></div>
   </aside>
 
-  <section class="hud hud-clock">
-    <div id="hud-time" class="time">10:57:00 AM</div>
-    <div id="hud-sub" class="sub">Thu, Jul 30 · — aircraft · 60× speed</div>
-    <div class="controls-row">
-      <button id="btn-pause" class="btn">⏸ Pause</button>
-      <button class="btn speed" data-speed="15">15×</button>
-      <button class="btn speed" data-speed="60">60×</button>
-      <button class="btn speed" data-speed="240">240×</button>
-      <button id="btn-mode" class="btn mode">⇡ Go Live</button>
-      <button id="btn-tags" class="btn tags active">✈ Tags</button>
-      <button id="btn-record" class="btn">● Record</button>
-      <a class="btn" href="ceiling.html" title="Ceiling projector mode">⌂ Ceiling</a>
+  <aside id="rail-right" class="rail">
+    <section id="inspector" hidden>
+      <div class="insp-head">
+        <h1 id="insp-callsign"></h1>
+        <button id="insp-follow" class="btn" title="Keep the camera on this aircraft (T)">Follow</button>
+        <button id="insp-close" class="btn" title="Clear selection (Esc)" aria-label="Clear selection">✕</button>
+      </div>
+      <div id="insp-fields"></div>
+      <div class="spark"><span>Altitude</span><canvas id="spark-alt"></canvas></div>
+      <div class="spark"><span>Ground speed</span><canvas id="spark-gs"></canvas></div>
+    </section>
+    <div class="list-head">
+      <h2>Traffic</h2>
+      <button class="btn active" data-sort="dist">Distance</button>
+      <button class="btn" data-sort="alt">Altitude</button>
     </div>
-  </section>
+    <div class="list-cols"><span>Callsign</span><span>Type</span><span>FL</span><span>mi</span></div>
+    <div id="traffic-list"></div>
+  </aside>
 
-  <footer class="hud-credits">
-    <div>Simulated traffic · 3D recreation · ADS-B style data</div>
-    <div class="hint">drag orbit · scroll zoom · 1/2/3 views · space pause · L live · F tags · R record</div>
+  <footer id="bottombar" class="bar">
+    <button id="btn-pause" class="btn">⏸ Pause</button>
+    <button class="btn speed" data-speed="15">15×</button>
+    <button class="btn speed" data-speed="60">60×</button>
+    <button class="btn speed" data-speed="240">240×</button>
+    <button id="btn-mode" class="btn mode">⇡ Go Live</button>
+    <button id="btn-tags" class="btn tags active">Tags</button>
+    <button id="btn-record" class="btn">● Record</button>
+    <a class="btn" href="ceiling.html" title="Ceiling projector mode">⌂ Ceiling</a>
+    <div class="spacer"></div>
+    <div class="hint">click aircraft inspect · drag orbit · scroll zoom · 1/2/3 views · space pause · L live · F tags · T follow · R record · Esc clear</div>
   </footer>
 
   <script type="module" src="js/main.js"></script>

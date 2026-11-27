@@ -10,6 +10,8 @@ import { Traffic } from './traffic.js';
 import { LiveTraffic } from './live.js';
 import { setTagsVisible } from './tags.js';
 import { Hud } from './hud.js';
+import { Overlays } from './overlays.js';
+import { Inspector } from './inspector.js';
 
 const START_MS = new Date(2026, 6, 30, 10, 57, 0).getTime(); // Thu Jul 30 2026, 10:57 AM
 const SPEEDS = [15, 60, 240];
@@ -49,18 +51,21 @@ if (initialView && CAMERA_PRESETS[initialView]) {
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.maxDistance = 220;
+controls.maxPolarAngle = Math.PI / 2 - 0.03; // stay above the ground: the flat map layers assume it
 controls.minDistance = 8;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 0.12;
 controls.update();
 
-scene.add(new THREE.AmbientLight(0x445566, 0.8));
-const dirLight = new THREE.DirectionalLight(0x8899bb, 0.5);
+// Bright enough that the lit airframes read as light gray against the dark map.
+scene.add(new THREE.HemisphereLight(0xdfe8f2, 0x39424d, 2.0));
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.4);
 dirLight.position.set(40, 80, 20);
 scene.add(dirLight);
 
-buildMap(scene);
+const map = buildMap(scene);
 const traffic = new Traffic(scene);
+const overlays = new Overlays(scene);
 const hud = new Hud(START_MS, SPEEDS[speedIndex]);
 
 // ---------- post processing ----------
@@ -68,9 +73,11 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.9, // strength
-  0.55, // radius
-  0.62 // threshold
+  // Low strength and a threshold of 1.0: only nav lights and trail heads, which are
+  // drawn brighter than white, glow. Text and linework stay sharp.
+  0.5, // strength
+  0.35, // radius
+  1.0 // threshold
 );
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
@@ -167,6 +174,7 @@ function setMode(next) {
   mode = next;
   const isLive = mode === 'live';
   traffic.group.visible = !isLive;
+  select(null); // ids do not carry across modes
   modeBtn.textContent = isLive ? '⇣ Go Sim' : '⇡ Go Live';
   modeBtn.classList.toggle('live', isLive);
   subtitleEl.textContent = isLive
@@ -184,6 +192,54 @@ function setMode(next) {
   }
 }
 modeBtn.addEventListener('click', () => setMode(mode === 'live' ? 'sim' : 'live'));
+
+// ---------- selection, hover, follow ----------
+const fleetNow = () => (mode === 'live' ? live.fleet : traffic.fleet);
+let selectedId = null;
+let hoveredId = null;
+let following = false;
+function select(id) {
+  selectedId = id;
+  if (id === null) following = false;
+}
+function toggleFollow() {
+  if (selectedId !== null) following = !following;
+}
+const inspector = new Inspector({ onClose: () => select(null), onFollow: toggleFollow });
+hud.onSelect = select;
+
+// Nearest aircraft to a screen point. The models are a few pixels wide at range, so
+// this picks by projected distance instead of raycasting the meshes.
+const PICK_RADIUS_PX = 24;
+const _proj = new THREE.Vector3();
+function pick(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  let best = null;
+  let bestD = PICK_RADIUS_PX;
+  for (const ac of fleetNow()) {
+    _proj.copy(ac.pos).project(camera);
+    if (_proj.z > 1) continue; // behind the camera
+    const d = Math.hypot(
+      rect.left + ((_proj.x + 1) / 2) * rect.width - clientX,
+      rect.top + ((1 - _proj.y) / 2) * rect.height - clientY
+    );
+    if (d < bestD) { bestD = d; best = ac; }
+  }
+  return best;
+}
+let pointer = null; // last pointer position over the canvas, for hover
+let downAt = null;
+const canvasEl = renderer.domElement;
+canvasEl.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY }; });
+canvasEl.addEventListener('pointermove', (e) => { pointer = { x: e.clientX, y: e.clientY }; });
+canvasEl.addEventListener('pointerleave', () => { pointer = null; });
+canvasEl.addEventListener('pointerup', (e) => {
+  // a drag is an orbit, not a click
+  if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) return;
+  const hit = pick(e.clientX, e.clientY);
+  select(hit ? hit.info.id : null);
+});
+
 if (new URLSearchParams(location.search).get('mode') === 'live') setMode('live');
 
 // ---------- flight tags toggle ----------
@@ -204,6 +260,8 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'r' || e.key === 'R') toggleRecord();
   else if (e.key === 'l' || e.key === 'L') setMode(mode === 'live' ? 'sim' : 'live');
   else if (e.key === 'f' || e.key === 'F') toggleTags();
+  else if (e.key === 't' || e.key === 'T') toggleFollow();
+  else if (e.key === 'Escape') select(null);
   else if (e.key === '+' || e.key === '=') setSpeedIndex(Math.min(SPEEDS.length - 1, speedIndex + 1));
   else if (e.key === '-') setSpeedIndex(Math.max(0, speedIndex - 1));
 });
@@ -221,6 +279,8 @@ controls.addEventListener('start', () => { controls.autoRotate = false; });
 controls.addEventListener('end', () => { orbitResumeAt = performance.now() + 6000; });
 
 // ---------- main loop ----------
+const TAG_FULL_WITHIN = 85; // miles from the camera
+const _follow = new THREE.Vector3();
 const clock = new THREE.Clock();
 let simTime = 0;
 let liveTime = 0;
@@ -243,21 +303,41 @@ function animate() {
     if (glide.t >= 1) glide = null;
   }
 
+  const fleet = fleetNow();
+  const selected = selectedId === null ? null : fleet.find((ac) => ac.info.id === selectedId) || null;
+  if (selectedId !== null && !selected) select(null); // it left the airspace
+  const hovered = pointer ? pick(pointer.x, pointer.y) : null;
+  hoveredId = hovered ? hovered.info.id : null;
+  canvasEl.style.cursor = hovered ? 'pointer' : '';
+
+  // Data blocks shrink to the callsign at range; hover or selection brings the full block back.
+  for (const ac of fleet) {
+    ac.visual.tag.compact = ac !== selected && ac !== hovered && camera.position.distanceTo(ac.pos) > TAG_FULL_WITHIN;
+  }
+
   if (mode === 'live') {
     live.update(dt, liveTime, camera);
-    hud.updateLive(live.count, live.feedOk);
   } else if (!paused) {
     const simDt = dt * hud.speed;
     simTime += simDt;
     hud.advance(dt);
     traffic.update(simDt, simTime, camera);
-    hud.update(traffic.count);
   } else {
     traffic.update(0, simTime, camera); // keep trails oriented
-    hud.update(traffic.count);
+  }
+
+  if (following && selected) {
+    // move camera and target together so the view angle and zoom are kept
+    _follow.subVectors(selected.pos, controls.target).multiplyScalar(Math.min(1, dt * 4));
+    controls.target.add(_follow);
+    camera.position.add(_follow);
   }
 
   controls.update();
+  overlays.update(fleet, selected, liveTime, camera);
+  map.update(camera.position.distanceTo(controls.target));
+  hud.render(mode, fleet, live ? live.feed : null, selectedId);
+  inspector.render(selected, following);
   composer.render();
 }
 animate();

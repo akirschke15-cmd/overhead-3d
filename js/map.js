@@ -1,6 +1,9 @@
-// Map layer: dark ground, Potomac river, major roads, 50mi dashed ring, city labels, airports
+// Map layer: baked vector basemap (coast, rivers, urban areas, roads, runways), range
+// rings, bearing ticks, graticule, city labels.
 import * as THREE from 'three';
-import { toWorld, buildFlatRibbon, buildDashedRing, RING_RADIUS_MI } from './geo.js';
+import { toWorld, buildFlatRibbon, flatToLatLon, RING_RADIUS_MI, CENTER, MI_PER_DEG_LAT, MI_PER_DEG_LON, FT_PER_MI } from './geo.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MONO } from './tags.js';
 
 const CITIES = [
   // [name, lat, lon, tier]  tier: 0 major, 1 mid, 2 minor
@@ -59,167 +62,273 @@ const CITIES = [
   ['QUANTICO', 38.5229, -77.2902, 2],
 ];
 
-const POTOMAC = [
-  [39.62, -77.52], [39.52, -77.50], [39.42, -77.44], [39.32, -77.38],
-  [39.22, -77.34], [39.10, -77.31], [38.99, -77.25], [38.95, -77.17],
-  [38.93, -77.10], [38.895, -77.05], [38.855, -77.03], [38.81, -77.035],
-  [38.77, -77.05], [38.73, -77.075], [38.69, -77.11], [38.655, -77.165],
-  [38.59, -77.19], [38.50, -77.23],
-];
+const WATER = 0x0c2033;
+const LAND = 0x0b1016;
+const URBAN = 0x121a23;
+const LINE = 0x8fa1b3; // linework and labels share one gray, varied by opacity
 
-const ROADS = [
-  // I-95
-  [[38.52, -77.30], [38.65, -77.26], [38.79, -77.18], [38.80, -77.05], [38.83, -76.99], [38.90, -76.95], [38.99, -76.87], [39.10, -76.84], [39.18, -76.70], [39.25, -76.63]],
-  // I-66
-  [[38.72, -77.60], [38.79, -77.46], [38.85, -77.36], [38.87, -77.27], [38.895, -77.17], [38.90, -77.07]],
-  // I-495 beltway
-  [[38.79, -77.03], [38.79, -77.18], [38.84, -77.21], [38.93, -77.18], [38.98, -77.10], [38.99, -77.03], [38.99, -76.94], [38.93, -76.90], [38.85, -76.93], [38.80, -76.97], [38.79, -77.03]],
-  // VA-267 Dulles Toll Rd
-  [[38.92, -77.22], [38.935, -77.28], [38.955, -77.35], [38.953, -77.45]],
-  // I-270
-  [[38.99, -77.10], [39.06, -77.14], [39.14, -77.20], [39.22, -77.24], [39.30, -77.21]],
-  // US-15 / Leesburg bypass
-  [[39.11, -77.57], [39.06, -77.50], [38.99, -77.47]],
-];
-
-const AIRPORTS = [
-  ['DCA', 38.8512, -77.0402],
-  ['IAD', 38.9531, -77.4565],
-  ['BWI', 39.1774, -76.6684],
-];
-
-function makeGroundTexture() {
-  const size = 1024;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = size;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#06090d';
-  ctx.fillRect(0, 0, size, size);
-  // soft radial lift toward center
-  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size * 0.55);
-  g.addColorStop(0, 'rgba(26,36,48,0.55)');
-  g.addColorStop(0.6, 'rgba(14,20,28,0.25)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
-  // faint concentric range rings every 10 mi (ground plane spans 170 mi)
-  const miToPx = size / 170;
-  ctx.strokeStyle = 'rgba(140,160,185,0.05)';
-  ctx.lineWidth = 1;
-  for (let r = 10; r <= 80; r += 10) {
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, r * miToPx, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  // subtle noise
-  for (let i = 0; i < 2600; i++) {
-    ctx.fillStyle = `rgba(160,180,200,${Math.random() * 0.02})`;
-    ctx.fillRect(Math.random() * size, Math.random() * size, 1, 1);
-  }
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+// Flat layers are coplanar. None of them writes depth, so they cannot z-fight and stack
+// purely by renderOrder; all of them test depth, so aircraft stay in front. Every layer's
+// renderOrder is negative, which keeps the ground under trails, rings and data blocks.
+const ORDER_SEA = -30000;
+const ORDER_BASEMAP = -20000;
+const ORDER_FURNITURE = -10000;
+let order = ORDER_SEA;
+function flat(material) {
+  material.depthWrite = false;
+  return material;
 }
+function layer(object) {
+  object.renderOrder = order++;
+  object.frustumCulled = false;
+  return object;
+}
+const lineMat = (opacity, color = LINE) => flat(new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
+const fillMat = (color, opacity = 1) =>
+  flat(new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, side: THREE.DoubleSide }));
 
-function makeLabelSprite(text, tier) {
-  const px = tier === 0 ? 46 : tier === 1 ? 36 : 28;
-  const pad = 14;
+/**
+ * Text as a world-scaled sprite. heightMi is the cap height on the map.
+ * @param {{mono?: boolean, color?: string, weight?: number, align?: 'left'|'center'}} [opts]
+ */
+export function makeTextSprite(text, heightMi, { mono = false, color = 'rgba(143,161,179,0.9)', weight = 600, align = 'center' } = {}) {
+  const px = 44;
+  const pad = 10;
+  const font = `${weight} ${px}px ${mono ? MONO : '"Segoe UI", "Helvetica Neue", Arial, sans-serif'}`;
   const cv = document.createElement('canvas');
   const ctx = cv.getContext('2d');
-  const font = `600 ${px}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
-  ctx.font = font;
-  try { ctx.letterSpacing = `${Math.round(px / 12)}px`; } catch (e) { /* older canvas */ }
-  const w = Math.ceil(ctx.measureText(text).width) + pad * 2;
-  cv.width = w;
+  const spacing = mono ? 0 : 4;
+  const setup = () => {
+    ctx.font = font;
+    try { ctx.letterSpacing = `${spacing}px`; } catch { /* older canvas */ }
+  };
+  setup();
+  cv.width = Math.ceil(ctx.measureText(text).width) + pad * 2;
   cv.height = px + pad * 2;
-  ctx.font = font;
-  try { ctx.letterSpacing = `${Math.round(px / 12)}px`; } catch (e) {}
+  setup();
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0,0,0,0.9)';
-  ctx.shadowBlur = 6;
-  ctx.fillStyle =
-    tier === 0 ? 'rgba(138,152,168,0.92)' : tier === 1 ? 'rgba(112,126,142,0.8)' : 'rgba(90,104,120,0.6)';
+  ctx.shadowColor = 'rgba(0,0,0,0.95)';
+  ctx.shadowBlur = 5;
+  ctx.fillStyle = color;
   ctx.fillText(text, pad, cv.height / 2);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  const hMi = tier === 0 ? 2.4 : tier === 1 ? 1.7 : 1.25;
-  sprite.scale.set((hMi * cv.width) / cv.height, hMi, 1);
-  sprite.renderOrder = 2;
+  tex.anisotropy = 4;
+  const sprite = new THREE.Sprite(flat(new THREE.SpriteMaterial({ map: tex, transparent: true })));
+  const h = (heightMi * cv.height) / px;
+  sprite.scale.set((h * cv.width) / cv.height, h, 1);
+  if (align === 'left') sprite.center.set(0, 0.5);
+  sprite.renderOrder = -1; // callers on the ground re-rank it with layer()
   return sprite;
 }
 
+function polylines(features, toPts) {
+  const pos = [];
+  for (const f of features) {
+    const pts = toPts(f);
+    for (let i = 1; i < pts.length; i++) pos.push(pts[i - 1].x, 0, pts[i - 1].z, pts[i].x, 0, pts[i].z);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+const worldPts = (flatLonLat) => flatToLatLon(flatLonLat).map(([lat, lon]) => toWorld(lat, lon));
+
+function polygonMesh(rings, material) {
+  const shapes = [];
+  for (const poly of rings) {
+    const [outer, ...holes] = Array.isArray(poly[0]) ? poly : [poly];
+    const path = (ring) => worldPts(ring).map((p) => new THREE.Vector2(p.x, p.z));
+    const shape = new THREE.Shape(path(outer));
+    for (const h of holes) shape.holes.push(new THREE.Path(path(h)));
+    shapes.push(shape);
+  }
+  const g = new THREE.ShapeGeometry(shapes);
+  g.rotateX(Math.PI / 2); // shape (x, y) -> ground (x, z)
+  return new THREE.Mesh(g, material);
+}
+
+function segments(pairs, material) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pairs, 3));
+  return new THREE.LineSegments(g, material);
+}
+
+function circle(r, n = 180) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a0 = (i / n) * Math.PI * 2;
+    const a1 = ((i + 1) / n) * Math.PI * 2;
+    out.push(Math.sin(a0) * r, 0, -Math.cos(a0) * r, Math.sin(a1) * r, 0, -Math.cos(a1) * r);
+  }
+  return out;
+}
+
+// ---------- instrument furniture: rings, bearing ticks, graticule ----------
+function buildFurniture(group, fading) {
+  const rings = [];
+  for (let r = 10; r <= 80; r += 10) {
+    if (r !== RING_RADIUS_MI) rings.push(...circle(r));
+    const label = makeTextSprite(`${r}`, r === RING_RADIUS_MI ? 1.1 : 0.85, { mono: true, color: 'rgba(143,161,179,0.75)' });
+    const a = (135 * Math.PI) / 180; // labels run out along the south-east diagonal
+    label.position.set(Math.sin(a) * r, 0, -Math.cos(a) * r);
+    group.add(layer(label));
+  }
+  group.add(layer(segments(rings, lineMat(0.11))));
+  group.add(layer(segments(circle(RING_RADIUS_MI, 360), lineMat(0.5))));
+
+  const ticks = [];
+  for (let deg = 0; deg < 360; deg += 10) {
+    const a = (deg * Math.PI) / 180;
+    const major = deg % 30 === 0;
+    const r1 = RING_RADIUS_MI + (major ? 1.6 : 0.8);
+    ticks.push(Math.sin(a) * RING_RADIUS_MI, 0, -Math.cos(a) * RING_RADIUS_MI, Math.sin(a) * r1, 0, -Math.cos(a) * r1);
+    if (!major) continue;
+    const cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[deg];
+    const label = makeTextSprite(cardinal || String(deg).padStart(3, '0'), cardinal ? 2.2 : 1.05, {
+      mono: !cardinal, weight: cardinal ? 700 : 500, color: cardinal ? 'rgba(190,203,216,0.92)' : 'rgba(143,161,179,0.7)',
+    });
+    const rl = RING_RADIUS_MI + (cardinal ? 4.2 : 3.2);
+    label.position.set(Math.sin(a) * rl, 0, -Math.cos(a) * rl);
+    group.add(layer(label));
+  }
+  group.add(layer(segments(ticks, lineMat(0.6))));
+
+  // graticule every 0.5 degrees, labelled along the west and south edges
+  const grat = [];
+  const span = 88;
+  const dLat = span / MI_PER_DEG_LAT;
+  const dLon = span / MI_PER_DEG_LON;
+  const snap = (v) => Math.ceil(v * 2) / 2;
+  for (let lat = snap(CENTER.lat - dLat); lat <= CENTER.lat + dLat; lat += 0.5) {
+    const z = toWorld(lat, CENTER.lon).z;
+    grat.push(-span, 0, z, span, 0, z);
+    const l = makeTextSprite(`${lat.toFixed(1)}°N`, 0.8, { mono: true, weight: 500, color: 'rgba(143,161,179,0.5)', align: 'left' });
+    l.position.set(-span + 0.6, 0, z - 0.9);
+    fading.push({ sprite: l, tier: 1 });
+    group.add(layer(l));
+  }
+  for (let lon = snap(CENTER.lon - dLon); lon <= CENTER.lon + dLon; lon += 0.5) {
+    const x = toWorld(CENTER.lat, lon).x;
+    grat.push(x, 0, -span, x, 0, span);
+    const l = makeTextSprite(`${Math.abs(lon).toFixed(1)}°W`, 0.8, { mono: true, weight: 500, color: 'rgba(143,161,179,0.5)', align: 'left' });
+    l.position.set(x + 0.6, 0, span - 0.9);
+    fading.push({ sprite: l, tier: 1 });
+    group.add(layer(l));
+  }
+  group.add(layer(segments(grat, lineMat(0.07))));
+}
+
+// ---------- baked basemap ----------
+function buildBasemap(group, data, fading) {
+  group.add(layer(polygonMesh(data.land, fillMat(LAND))));
+  group.add(layer(new THREE.LineSegments(polylines(data.land, (ring) => { const p = worldPts(ring); p.push(p[0]); return p; }), lineMat(0.8, 0x1d3a55))));
+  group.add(layer(polygonMesh(data.urban, fillMat(URBAN))));
+  if (data.lakes.length) group.add(layer(polygonMesh(data.lakes, fillMat(WATER))));
+
+  const riverMat = fillMat(0x10263a);
+  group.add(layer(new THREE.Mesh(mergeGeometries(data.rivers.map((r) => buildFlatRibbon(flatToLatLon(r.pts), 0.3, 0))), riverMat)));
+  group.add(layer(new THREE.LineSegments(polylines(data.rivers, (r) => worldPts(r.pts)), lineMat(0.9, 0x16324a))));
+
+  // roads in two weights: a hairline for every road, a ribbon under the major ones
+  const major = data.roads.filter((r) => r.w === 0);
+  const majorMat = fillMat(0x2a3d52, 0.85);
+  group.add(layer(new THREE.Mesh(mergeGeometries(major.map((r) => buildFlatRibbon(flatToLatLon(r.pts), 0.13, 0))), majorMat)));
+  group.add(layer(new THREE.LineSegments(polylines(data.roads.filter((r) => r.w === 1), (r) => worldPts(r.pts)), lineMat(0.55, 0x233346))));
+  group.add(layer(new THREE.LineSegments(polylines(major, (r) => worldPts(r.pts)), lineMat(0.9, 0x34495f))));
+
+  // runways: true length and width as ribbons, plus a hairline so they survive zooming out
+  const runwayMat = fillMat(0xb7c4d1, 0.95);
+  const hair = [];
+  const centerlines = [];
+  const strips = [];
+  for (const ap of data.airports) {
+    for (const rw of ap.runways) {
+      const ends = [rw.le, rw.he].map(([, lat, lon]) => toWorld(lat, lon));
+      strips.push(buildFlatRibbon([[rw.le[1], rw.le[2]], [rw.he[1], rw.he[2]]], Math.max(rw.wid, 150) / FT_PER_MI, 0));
+      hair.push(ends[0].x, 0, ends[0].z, ends[1].x, 0, ends[1].z);
+      if (!ap.major) continue;
+      const dir = ends[1].clone().sub(ends[0]).normalize();
+      for (const [end, sign, ident] of [[ends[0], -1, rw.le[0]], [ends[1], 1, rw.he[0]]]) {
+        // dashed extended centerline, 10 mi out from each threshold
+        for (let d = 0.5; d < 10; d += 1) {
+          const a = end.clone().addScaledVector(dir, sign * d);
+          const b = end.clone().addScaledVector(dir, sign * (d + 0.5));
+          centerlines.push(a.x, 0, a.z, b.x, 0, b.z);
+        }
+        // Runway numbers come from the published ident. They are magnetic, so they are never derived from the drawn heading.
+        const num = makeTextSprite(ident, 0.2, { mono: true, weight: 700, color: 'rgba(214,224,234,0.95)' });
+        const at = end.clone().addScaledVector(dir, sign * 0.22);
+        num.position.set(at.x, 0, at.z);
+        fading.push({ sprite: num, tier: 3 });
+        group.add(layer(num));
+      }
+    }
+    const p = toWorld(ap.lat, ap.lon);
+    const label = makeTextSprite(ap.id, ap.major ? 1.5 : 0.75, {
+      mono: true, weight: 700, align: 'left', color: ap.major ? 'rgba(214,224,234,0.95)' : 'rgba(143,161,179,0.8)',
+    });
+    label.position.set(p.x + (ap.major ? 1.6 : 0.7), 0, p.z);
+    if (!ap.major) fading.push({ sprite: label, tier: 2 });
+    group.add(layer(label));
+  }
+  group.add(layer(new THREE.Mesh(mergeGeometries(strips), runwayMat)));
+  group.add(layer(segments(centerlines, lineMat(0.32))));
+  group.add(layer(segments(hair, lineMat(0.95, 0xb7c4d1))));
+}
+
+/**
+ * @returns {{group: THREE.Group, update: (cameraDistance: number) => void}} update fades
+ *   labels by tier so they thin out as the camera pulls back.
+ */
 export function buildMap(scene) {
   const group = new THREE.Group();
+  const fading = []; // {sprite, tier}: 1 goes first when zooming out; 3 shows only close in
 
-  // ground
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(170, 170),
-    new THREE.MeshBasicMaterial({ map: makeGroundTexture() })
-  );
-  ground.rotation.x = -Math.PI / 2;
-  group.add(ground);
+  const half = 90;
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(half * 2, half * 2), fillMat(WATER));
+  sea.rotation.x = -Math.PI / 2;
+  group.add(layer(sea));
 
-  // potomac river: dark base + slightly lighter core (DoubleSide: ribbon winding varies)
-  const riverBase = new THREE.MeshBasicMaterial({ color: 0x132433, side: THREE.DoubleSide });
-  const riverCore = new THREE.MeshBasicMaterial({ color: 0x1b3247, side: THREE.DoubleSide });
-  group.add(new THREE.Mesh(buildFlatRibbon(POTOMAC, 0.7), riverBase));
-  group.add(new THREE.Mesh(buildFlatRibbon(POTOMAC, 0.3, 0.025), riverCore));
+  // The basemap is one static JSON file. If it fails to load the instrument still works:
+  // rings, labels and traffic over open water-colored ground.
+  const base = new THREE.Group();
+  group.add(base);
+  fetch('data/basemap.json')
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+    .then((data) => {
+      order = ORDER_BASEMAP;
+      buildBasemap(base, data, fading);
+    })
+    .catch((err) => console.warn('basemap unavailable:', err.message));
 
-  // roads
-  const roadMat = new THREE.MeshBasicMaterial({ color: 0x223448, side: THREE.DoubleSide });
-  for (const r of ROADS) {
-    group.add(new THREE.Mesh(buildFlatRibbon(r, 0.22, 0.022), roadMat));
-  }
+  order = ORDER_FURNITURE;
+  buildFurniture(group, fading);
 
-  // 50 mi dashed ring
-  const ring = new THREE.Mesh(
-    buildDashedRing(RING_RADIUS_MI),
-    new THREE.MeshBasicMaterial({ color: 0x93a2b1, transparent: true, opacity: 0.75, side: THREE.DoubleSide })
-  );
-  group.add(ring);
+  // center marker
+  const marker = [...circle(0.6, 40)];
+  marker.push(-1.1, 0, 0, 1.1, 0, 0, 0, 0, -1.1, 0, 0, 1.1);
+  group.add(layer(segments(marker, lineMat(0.7, 0xc4d0da))));
 
-  // center marker at Reston
-  const markerRing = new THREE.Mesh(
-    new THREE.RingGeometry(0.55, 0.72, 40),
-    new THREE.MeshBasicMaterial({ color: 0xaab8c6, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
-  );
-  markerRing.rotation.x = -Math.PI / 2;
-  markerRing.position.y = 0.04;
-  group.add(markerRing);
-  const markerDot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.14, 20),
-    new THREE.MeshBasicMaterial({ color: 0xc4d0da, transparent: true, opacity: 0.8 })
-  );
-  markerDot.rotation.x = -Math.PI / 2;
-  markerDot.position.y = 0.04;
-  group.add(markerDot);
-
-  // city labels
   for (const [name, lat, lon, tier] of CITIES) {
-    const s = makeLabelSprite(name, tier);
+    const s = makeTextSprite(name, tier === 0 ? 1.5 : tier === 1 ? 1.0 : 0.72, {
+      color: tier === 0 ? 'rgba(160,174,188,0.95)' : tier === 1 ? 'rgba(128,142,157,0.85)' : 'rgba(104,118,134,0.75)',
+    });
     const p = toWorld(lat, lon);
-    s.position.set(p.x, 0.06, p.z);
-    group.add(s);
-  }
-
-  // airports: flat ring + code label
-  for (const [code, lat, lon] of AIRPORTS) {
-    const p = toWorld(lat, lon);
-    const ringM = new THREE.Mesh(
-      new THREE.RingGeometry(0.4, 0.58, 28),
-      new THREE.MeshBasicMaterial({ color: 0xd8e4ee, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
-    );
-    ringM.rotation.x = -Math.PI / 2;
-    ringM.position.set(p.x, 0.05, p.z);
-    group.add(ringM);
-    const label = makeLabelSprite(code, 1);
-    label.material.opacity = 0.95;
-    label.position.set(p.x + 2.2, 0.06, p.z);
-    group.add(label);
+    s.position.set(p.x, 0, p.z);
+    if (tier > 0) fading.push({ sprite: s, tier: tier === 1 ? 1 : 2 });
+    group.add(layer(s));
   }
 
   scene.add(group);
-  return group;
+  const FADE = { 1: [105, 150], 2: [42, 66], 3: [14, 24] }; // camera distance: full -> gone
+  function update(cameraDistance) {
+    for (const { sprite, tier } of fading) {
+      const [near, far] = FADE[tier];
+      const k = 1 - THREE.MathUtils.clamp((cameraDistance - near) / (far - near), 0, 1);
+      sprite.visible = k > 0.02;
+      sprite.material.opacity = k;
+    }
+  }
+  return { group, update };
 }

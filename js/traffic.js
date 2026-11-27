@@ -1,8 +1,8 @@
 // Traffic generator: DCA river arrivals, IAD flows, BWI, cruise overflights, holding stacks
 import * as THREE from 'three';
-import { toWorld, KTS_TO_MI_PER_SEC } from './geo.js';
-import { getAircraftGeometry, STATUS_MATERIALS, STATUS_COLORS, Trail } from './aircraft.js';
-import { FlightTag } from './tags.js';
+import { toWorld, altToWorld, KTS_TO_MI_PER_SEC } from './geo.js';
+import { AircraftVisual, colorOf, recordHistory, statusOf } from './aircraft.js';
+import { classOf, SIM_TYPES } from './classes.js';
 
 const CALLSIGN_POOLS = {
   dcaArr: ['AAL', 'RPA', 'JIA', 'PDT', 'DAL', 'UAL', 'SWA', 'JBU', 'ENY', 'ASH'],
@@ -14,7 +14,13 @@ const CALLSIGN_POOLS = {
   hold: ['UAL', 'AAL', 'DAL', 'JBU', 'RPA', 'ENY'],
 };
 
+function makeTailNumber() {
+  const L = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  return `N${100 + Math.floor(Math.random() * 900)}${L[Math.floor(Math.random() * L.length)]}${L[Math.floor(Math.random() * L.length)]}`;
+}
+
 function makeCallsign(category) {
+  if (category === 'ga' || category === 'heli') return makeTailNumber();
   const pool = CALLSIGN_POOLS[category] || CALLSIGN_POOLS.cruise;
   return pool[Math.floor(Math.random() * pool.length)] + (100 + Math.floor(Math.random() * 4800));
 }
@@ -55,6 +61,18 @@ const ROUTES = {
     [[39.22, -77.92, 37000], [38.72, -76.52, 37000]],
     [[38.48, -77.30, 35000], [39.52, -77.14, 35000]],
   ],
+  ga: [
+    // Manassas, Leesburg, Frederick, Gaithersburg: low and slow outside the inner airspace
+    [[38.7214, -77.5154, 0], [38.66, -77.62, 2500], [38.56, -77.80, 4500], [38.47, -78.00, 4500]],
+    [[39.42, -77.90, 5500], [39.25, -77.72, 4000], [39.12, -77.60, 2000], [39.0780, -77.5575, 0]],
+    [[39.4176, -77.3743, 0], [39.48, -77.30, 2500], [39.60, -77.10, 4500], [39.72, -76.85, 4500]],
+    [[38.45, -76.55, 3500], [38.70, -76.60, 3500], [38.95, -76.62, 3000], [39.20, -76.95, 2500], [39.1683, -77.166, 0]],
+  ],
+  heli: [
+    // Potomac and Anacostia helicopter routes, and a medevac run
+    [[38.60, -77.14, 600], [38.72, -77.04, 400], [38.80, -77.03, 300], [38.87, -77.045, 300], [38.93, -77.12, 500], [39.00, -77.25, 900]],
+    [[39.05, -76.85, 1200], [38.95, -76.95, 800], [38.89, -77.00, 500], [38.84, -77.01, 400], [38.76, -77.03, 600], [38.66, -76.90, 1000]],
+  ],
   hold: [
     // stack over Centreville, two laps, then feed into IAD
     [[38.80, -77.52, 8000], [38.87, -77.52, 7600], [38.90, -77.43, 7200], [38.83, -77.38, 7000],
@@ -66,19 +84,22 @@ const ROUTES = {
   ],
 };
 
-const TARGETS = { dcaArr: 7, dcaDep: 6, iadArr: 9, iadDep: 8, bwi: 3, cruise: 9, hold: 2 };
+const TARGETS = { dcaArr: 7, dcaDep: 6, iadArr: 9, iadDep: 8, bwi: 3, cruise: 9, hold: 2, ga: 4, heli: 2 };
 
 function speedFor(category, altFt, jitter) {
-  if (category === 'cruise') return (440 + Math.random() * 40) * jitter;
+  if (category === 'heli') return 115 * jitter;
+  if (category === 'ga') return (altFt > 1500 ? 135 : 95) * jitter;
+  if (category === 'cruise') return 460 * jitter;
   if (altFt > 18000) return 420 * jitter;
   if (altFt > 8000) return 260 * jitter;
   if (altFt > 3000) return 200 * jitter;
   return 168 * jitter;
 }
 
+let nextSimId = 1;
+
 class Aircraft {
-  constructor(scene, category, route) {
-    this.scene = scene;
+  constructor(scene, category, route, visual) {
     this.category = category;
     this.route = route;
     this.wpIndex = 1;
@@ -90,16 +111,20 @@ class Aircraft {
     this.prevAltFt = alt;
     this.vrate = 0;
     this.status = 'level';
-
-    this.mesh = new THREE.Mesh(getAircraftGeometry(), STATUS_MATERIALS.level);
-    this.mesh.position.copy(this.pos);
-    scene.add(this.mesh);
-
-    this.trail = new Trail(scene);
     this.yaw = 0;
-
     this.callsign = makeCallsign(category);
-    this.tag = new FlightTag(scene);
+    this.history = [];
+
+    const types = SIM_TYPES[category];
+    const type = types[Math.floor(Math.random() * types.length)];
+    /** @type {import('./aircraft.js').AircraftInfo} */
+    this.info = {
+      id: `sim${nextSimId++}`, callsign: this.callsign, reg: null, type, cls: classOf(type, null),
+      hex: null, squawk: null, altBaro: alt, altGeom: null, altSel: null, gs: null, track: null,
+      vrate: 0, source: 'simulated', seenAt: null, emergency: false, status: 'level',
+    };
+    // Ceiling mode runs this simulator for positions only and draws its own glyphs.
+    this.visual = visual ? new AircraftVisual(scene, this.info.cls) : null;
   }
 
   update(dt, simTime) {
@@ -124,23 +149,22 @@ class Aircraft {
     }
 
     // altitude chases current waypoint altitude at a realistic vertical rate
-    const climbFps = 2400 / 60; // ft per sim-second
-    const descFps = 1700 / 60;
+    const slow = this.category === 'ga' || this.category === 'heli';
+    const climbFps = (slow ? 700 : 2400) / 60; // ft per sim-second
+    const descFps = (slow ? 600 : 1700) / 60;
     const dAlt = walt - this.altFt;
-    const maxUp = climbFps * dt;
-    const maxDown = descFps * dt;
     this.prevAltFt = this.altFt;
-    this.altFt += THREE.MathUtils.clamp(dAlt, -maxDown, maxUp);
-    this.pos.y = toWorld(0, 0, this.altFt).y;
+    this.altFt += THREE.MathUtils.clamp(dAlt, -descFps * dt, climbFps * dt);
+    this.pos.y = altToWorld(this.altFt);
 
     // smoothed vertical rate -> status color
     if (dt > 0) {
       const instant = ((this.altFt - this.prevAltFt) / dt) * 60;
       this.vrate += (instant - this.vrate) * Math.min(1, dt * 0.5);
     }
-    this.status = this.vrate > 350 ? 'climb' : this.vrate < -350 ? 'descend' : 'level';
+    this.status = statusOf(this.vrate);
 
-    // orientation: yaw toward travel, slight pitch with vertical rate
+    // yaw toward travel
     if (dist > 1e-4) {
       const targetYaw = Math.atan2(dx, dz);
       let d = targetYaw - this.yaw;
@@ -148,29 +172,31 @@ class Aircraft {
       while (d < -Math.PI) d += Math.PI * 2;
       this.yaw += d * Math.min(1, dt * 1.5);
     }
-    const pitch = THREE.MathUtils.clamp(this.vrate / 3000, -1, 1) * 0.35;
-    this.mesh.rotation.set(-pitch, this.yaw, 0, 'YXZ');
-    this.mesh.position.copy(this.pos);
-    this.mesh.material = STATUS_MATERIALS[this.status];
 
-    this.trail.push(this.pos, simTime);
-    this.tag.set(this.callsign, this.altFt, kts, this.status);
-    this.tag.follow(this.pos, simTime * 1000);
+    const info = this.info;
+    info.altBaro = this.altFt;
+    info.gs = kts;
+    info.track = (180 - (this.yaw * 180) / Math.PI + 360) % 360; // mesh yaw -> compass track
+    info.vrate = this.vrate;
+    info.altSel = walt;
+    info.status = this.status;
+    recordHistory(this, simTime, 4);
+    this.visual?.update(this, dt, simTime);
     return this.wpIndex < this.route.length;
   }
 
   dispose() {
-    this.scene.remove(this.mesh);
-    this.trail.dispose(this.scene);
-    this.tag.dispose();
+    this.visual?.dispose();
   }
 }
 
 export class Traffic {
-  constructor(scene) {
+  /** @param {{visual?: boolean}} [opts] visual false: positions only, nothing drawn (ceiling mode) */
+  constructor(scene, { visual = true } = {}) {
     this.group = new THREE.Group();
     scene.add(this.group);
     this.scene = this.group;
+    this.visual = visual;
     this.aircraft = [];
     this.spawnTimer = 0;
     this._prePopulate();
@@ -179,7 +205,7 @@ export class Traffic {
   _spawn(category) {
     const variants = ROUTES[category];
     const route = variants[Math.floor(Math.random() * variants.length)];
-    const ac = new Aircraft(this.scene, category, route);
+    const ac = new Aircraft(this.scene, category, route, this.visual);
     this.aircraft.push(ac);
     return ac;
   }
@@ -225,12 +251,15 @@ export class Traffic {
     }
 
     // trails face the camera
-    for (const ac of this.aircraft) {
-      ac.trail.update(camera, STATUS_COLORS[ac.status]);
-    }
+    for (const ac of this.aircraft) ac.visual?.trail.update(camera, colorOf(ac.info));
   }
 
   get count() {
     return this.aircraft.length;
+  }
+
+  /** Same shape as LiveTraffic.fleet. */
+  get fleet() {
+    return this.aircraft;
   }
 }
