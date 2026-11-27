@@ -196,7 +196,7 @@ export class AircraftVisual {
     if (this.rotor) this.rotor.rotation.y += dt * 38;
     this.trail.push(pos, time);
     this.tag.set(info);
-    this.tag.follow(pos, time * 1000);
+    this.tag.follow(pos);
   }
 
   dispose() {

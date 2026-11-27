@@ -100,14 +100,13 @@ export class Overlays {
     // drop line + data-block leader: two segments per aircraft
     this.stems = new THREE.LineSegments(dynamicGeometry(MAX_AIRCRAFT * 4, true), line(0.5));
     this.shadows = new THREE.LineSegments(dynamicGeometry(MAX_AIRCRAFT * SHADOW_SEGMENTS * 2, true), line(0.3));
-    this.shadows.material.depthTest = false; // lies on the ground with the basemap
-    this.shadows.renderOrder = -1;
+    this.shadows.renderOrder = -2; // on the ground, above the basemap
     const disc = discTexture();
     const points = (size) => new THREE.PointsMaterial({
       size, map: disc, vertexColors: true, transparent: true, depthWrite: false, sizeAttenuation: true,
     });
     this.groundMarks = new THREE.Points(dynamicGeometry(MAX_AIRCRAFT, true), points(0.55));
-    this.groundMarks.material.depthTest = false;
+    this.groundMarks.renderOrder = -1;
     this.navLights = new THREE.Points(dynamicGeometry(MAX_AIRCRAFT * 3, true), points(0.42));
     this.navLights.material.blending = THREE.AdditiveBlending;
 

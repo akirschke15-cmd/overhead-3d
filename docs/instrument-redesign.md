@@ -1,6 +1,6 @@
 # Overhead 3D: Instrument visual redesign
 
-Status: built on branch `instrument-redesign`. See "As built" at the end for where the build differs from the plan.
+Status: built on branch `instrument-redesign`. This is a condensed copy of the approved draft; the approaches-considered, files and risks sections are left out. See "As built" at the end for where the build differs from the plan.
 
 ## Intent
 

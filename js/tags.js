@@ -60,13 +60,16 @@ export class FlightTag {
     this._info = info;
   }
 
-  follow(pos, nowMs) {
+  follow(pos) {
     this.sprite.position.set(pos.x, pos.y + TAG_LIFT, pos.z);
     this.sprite.visible = TAGS_VISIBLE;
-    if (this._key !== this._drawnKey && nowMs - this._lastDraw > 400) {
+    // Rate-limited on the wall clock: at 60x sim speed, sim time would allow a texture
+    // upload per climbing aircraft on nearly every frame.
+    const wall = performance.now();
+    if (this._key !== this._drawnKey && wall - this._lastDraw > 400) {
       this._draw();
       this._drawnKey = this._key;
-      this._lastDraw = nowMs;
+      this._lastDraw = wall;
     }
   }
 

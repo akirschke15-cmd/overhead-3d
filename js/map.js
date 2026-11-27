@@ -2,6 +2,7 @@
 // rings, bearing ticks, graticule, city labels.
 import * as THREE from 'three';
 import { toWorld, buildFlatRibbon, flatToLatLon, RING_RADIUS_MI, CENTER, MI_PER_DEG_LAT, MI_PER_DEG_LON, FT_PER_MI } from './geo.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MONO } from './tags.js';
 
 const CITIES = [
@@ -66,11 +67,14 @@ const LAND = 0x0b1016;
 const URBAN = 0x121a23;
 const LINE = 0x8fa1b3; // linework and labels share one gray, varied by opacity
 
-// Flat layers are coplanar. They skip the depth buffer and draw in renderOrder, which
-// avoids z-fighting at any zoom; the camera is kept above the ground.
-let order = -100;
+// Flat layers are coplanar. None of them writes depth, so they cannot z-fight and stack
+// purely by renderOrder; all of them test depth, so aircraft stay in front. Every layer's
+// renderOrder is negative, which keeps the ground under trails, rings and data blocks.
+const ORDER_SEA = -30000;
+const ORDER_BASEMAP = -20000;
+const ORDER_FURNITURE = -10000;
+let order = ORDER_SEA;
 function flat(material) {
-  material.depthTest = false;
   material.depthWrite = false;
   return material;
 }
@@ -114,7 +118,7 @@ export function makeTextSprite(text, heightMi, { mono = false, color = 'rgba(143
   const h = (heightMi * cv.height) / px;
   sprite.scale.set((h * cv.width) / cv.height, h, 1);
   if (align === 'left') sprite.center.set(0, 0.5);
-  sprite.renderOrder = 2;
+  sprite.renderOrder = -1; // callers on the ground re-rank it with layer()
   return sprite;
 }
 
@@ -223,13 +227,13 @@ function buildBasemap(group, data, fading) {
   if (data.lakes.length) group.add(layer(polygonMesh(data.lakes, fillMat(WATER))));
 
   const riverMat = fillMat(0x10263a);
-  for (const r of data.rivers) group.add(layer(new THREE.Mesh(buildFlatRibbon(flatToLatLon(r.pts), 0.3, 0), riverMat)));
+  group.add(layer(new THREE.Mesh(mergeGeometries(data.rivers.map((r) => buildFlatRibbon(flatToLatLon(r.pts), 0.3, 0))), riverMat)));
   group.add(layer(new THREE.LineSegments(polylines(data.rivers, (r) => worldPts(r.pts)), lineMat(0.9, 0x16324a))));
 
   // roads in two weights: a hairline for every road, a ribbon under the major ones
   const major = data.roads.filter((r) => r.w === 0);
   const majorMat = fillMat(0x2a3d52, 0.85);
-  for (const r of major) group.add(layer(new THREE.Mesh(buildFlatRibbon(flatToLatLon(r.pts), 0.13, 0), majorMat)));
+  group.add(layer(new THREE.Mesh(mergeGeometries(major.map((r) => buildFlatRibbon(flatToLatLon(r.pts), 0.13, 0))), majorMat)));
   group.add(layer(new THREE.LineSegments(polylines(data.roads.filter((r) => r.w === 1), (r) => worldPts(r.pts)), lineMat(0.55, 0x233346))));
   group.add(layer(new THREE.LineSegments(polylines(major, (r) => worldPts(r.pts)), lineMat(0.9, 0x34495f))));
 
@@ -237,10 +241,11 @@ function buildBasemap(group, data, fading) {
   const runwayMat = fillMat(0xb7c4d1, 0.95);
   const hair = [];
   const centerlines = [];
+  const strips = [];
   for (const ap of data.airports) {
     for (const rw of ap.runways) {
       const ends = [rw.le, rw.he].map(([, lat, lon]) => toWorld(lat, lon));
-      group.add(layer(new THREE.Mesh(buildFlatRibbon([[rw.le[1], rw.le[2]], [rw.he[1], rw.he[2]]], Math.max(rw.wid, 150) / FT_PER_MI, 0), runwayMat)));
+      strips.push(buildFlatRibbon([[rw.le[1], rw.le[2]], [rw.he[1], rw.he[2]]], Math.max(rw.wid, 150) / FT_PER_MI, 0));
       hair.push(ends[0].x, 0, ends[0].z, ends[1].x, 0, ends[1].z);
       if (!ap.major) continue;
       const dir = ends[1].clone().sub(ends[0]).normalize();
@@ -267,6 +272,7 @@ function buildBasemap(group, data, fading) {
     if (!ap.major) fading.push({ sprite: label, tier: 2 });
     group.add(layer(label));
   }
+  group.add(layer(new THREE.Mesh(mergeGeometries(strips), runwayMat)));
   group.add(layer(segments(centerlines, lineMat(0.32))));
   group.add(layer(segments(hair, lineMat(0.95, 0xb7c4d1))));
 }
@@ -291,12 +297,12 @@ export function buildMap(scene) {
   fetch('data/basemap.json')
     .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
     .then((data) => {
-      order = -90;
+      order = ORDER_BASEMAP;
       buildBasemap(base, data, fading);
     })
     .catch((err) => console.warn('basemap unavailable:', err.message));
 
-  order = -40;
+  order = ORDER_FURNITURE;
   buildFurniture(group, fading);
 
   // center marker

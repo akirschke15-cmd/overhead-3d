@@ -34,7 +34,9 @@ export class Hud {
       `<div class="band"><span class="band-label">${label}</span><span class="band-bar"><i></i></span><span class="band-n">0</span></div>`).join('');
     this._bandEls = [...this.el.bands.querySelectorAll('.band')].map((b) => ({ bar: b.querySelector('i'), n: b.querySelector('.band-n') }));
 
-    this.el.list.addEventListener('click', (e) => {
+    // pointerdown, not click: the rows are rebuilt twice a second, and a click whose press
+    // and release straddle a rebuild never reaches a row
+    this.el.list.addEventListener('pointerdown', (e) => {
       const row = e.target.closest('[data-id]');
       if (row) this.onSelect(row.dataset.id);
     });
@@ -117,11 +119,13 @@ export class Hud {
       box.className = 'feed feed-off';
       return;
     }
+    // `sentAt` is the feed's own `now`; readsb-family servers send it in seconds or in ms
+    const sentMs = feed.sentAt == null ? null : feed.sentAt < 1e11 ? feed.sentAt * 1000 : feed.sentAt;
     poll.textContent = feed.pollMs == null ? DASH : `${Math.round(feed.pollMs)} ms`;
     // Age of the data on screen: from the server's own timestamp when the response
     // carries one, else from when the last good response arrived.
     const sinceOk = feed.lastOkAt == null ? null
-      : feed.sentAt != null ? Math.max(0, (Date.now() - feed.sentAt) / 1000)
+      : sentMs != null ? Math.max(0, (Date.now() - sentMs) / 1000)
       : (now - feed.lastOkAt) / 1000;
     age.textContent = sinceOk == null ? DASH : `${sinceOk.toFixed(1)} s`;
     errors.textContent = feed.errors;

@@ -48,6 +48,8 @@ class LiveAircraft {
     this.yaw = 0;
     this.targetYaw = 0;
     this.lastSeen = 0;
+    this.lastAlt = null; // previous report's altitude, for deriving a missing vertical rate
+    this.lastAltAt = 0;
     this.history = [];
     /** @type {import('./aircraft.js').AircraftInfo} */
     this.info = { id: ac.hex, status: 'level', ...readFeedEntry(ac, performance.now()) };
@@ -62,11 +64,16 @@ class LiveAircraft {
     const now = performance.now();
     const cls = this.info.cls; // the model is built once; a late type code does not swap it
     Object.assign(this.info, readFeedEntry(ac, now), { cls });
+    // An aircraft with no reported altitude is drawn at the last height it did report.
+    const alt = altOf(this.info);
+    // No rate in the report: derive it from this aircraft's own successive altitudes.
+    if (this.info.vrate == null && alt != null && this.lastAlt != null && now - this.lastAltAt > 500) {
+      this.info.vrate = ((alt - this.lastAlt) / (now - this.lastAltAt)) * 60000;
+    }
+    if (alt != null) { this.lastAlt = alt; this.lastAltAt = now; }
     this.info.status = statusOf(this.info.vrate);
     this.lastSeen = now;
 
-    // An aircraft with no reported altitude is drawn at the last height it did report.
-    const alt = altOf(this.info);
     const y = this.target.y;
     this.target.copy(toWorld(ac.lat, ac.lon, alt ?? 0));
     if (alt == null) this.target.y = y;
@@ -99,11 +106,13 @@ export class LiveTraffic {
     /** Feed health for the HUD. Times are ms; null until the first poll answers. */
     this.feed = { pollMs: null, lastOkAt: null, sentAt: null, errors: 0, lastError: null };
     this._timer = null;
+    this._run = 0; // bumped by stop(); a poll loop from an earlier start() sees it and ends
     this._fleet = [];
   }
 
   start() {
     if (this._timer !== null) return;
+    const run = ++this._run;
     const poll = async () => {
       const t0 = performance.now();
       try {
@@ -113,18 +122,20 @@ export class LiveTraffic {
         clearTimeout(to);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (run !== this._run) return;
         this._ingest(data.ac || []);
         this.feedOk = true;
         Object.assign(this.feed, {
           pollMs: performance.now() - t0, lastOkAt: performance.now(),
           sentAt: num(data.now), errors: 0, lastError: null,
         });
-        if (this._timer !== null) this._timer = setTimeout(poll, POLL_MS);
+        this._timer = setTimeout(poll, POLL_MS);
       } catch (err) {
+        if (run !== this._run) return;
         this.feedOk = false;
         this.feed.errors++;
         this.feed.lastError = err.name === 'AbortError' ? 'timeout' : err.message;
-        if (this._timer !== null) this._timer = setTimeout(poll, ERROR_RETRY_MS);
+        this._timer = setTimeout(poll, ERROR_RETRY_MS);
       }
     };
     this._timer = 0; // non-null marks "running" before the first timeout id exists
@@ -134,6 +145,7 @@ export class LiveTraffic {
   stop() {
     clearTimeout(this._timer);
     this._timer = null;
+    this._run++;
   }
 
   _ingest(list) {
