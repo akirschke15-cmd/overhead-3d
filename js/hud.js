@@ -128,8 +128,11 @@ export class Hud {
       : sentMs != null ? Math.max(0, (Date.now() - sentMs) / 1000)
       : (now - feed.lastOkAt) / 1000;
     age.textContent = sinceOk == null ? DASH : `${sinceOk.toFixed(1)} s`;
-    errors.textContent = feed.errors;
+    // While failing, say when the next attempt is: the loop backs off, so a bare count
+    // would look frozen.
+    const retryIn = feed.errors && feed.nextPollAt != null ? Math.max(0, Math.ceil((feed.nextPollAt - now) / 1000)) : null;
+    errors.textContent = retryIn == null ? feed.errors : `${feed.errors} · retry ${retryIn} s`;
     box.className = `feed ${feed.errors ? 'feed-err' : sinceOk == null ? 'feed-wait' : 'feed-ok'}`;
-    box.title = feed.lastError ? `last error: ${feed.lastError}` : '';
+    box.title = feed.lastError ? `Feed unreachable (${feed.lastError}). The browser cannot tell a refusal from an outage.` : '';
   }
 }

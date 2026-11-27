@@ -3,11 +3,11 @@ import * as THREE from 'three';
 import { toWorld, CENTER } from './geo.js';
 import { AircraftVisual, altOf, colorOf, recordHistory, statusOf } from './aircraft.js';
 import { classOf } from './classes.js';
+import { FeedPoller } from './feed.js';
 
 const RADIUS_NM = 45; // ~52 statute miles, covers the 50mi ring
 const API_URL = `https://api.airplanes.live/v2/point/${CENTER.lat}/${CENTER.lon}/${RADIUS_NM}`;
 const POLL_MS = 2000;
-const ERROR_RETRY_MS = 6000;
 const STALE_MS = 25000; // drop aircraft not seen for this long
 const EMERGENCY_SQUAWKS = new Set(['7500', '7600', '7700']);
 
@@ -102,50 +102,16 @@ export class LiveTraffic {
     this.group.visible = false;
     scene.add(this.group);
     this.aircraft = new Map(); // hex -> LiveAircraft
-    this.feedOk = null; // null = no poll yet
-    /** Feed health for the HUD. Times are ms; null until the first poll answers. */
-    this.feed = { pollMs: null, lastOkAt: null, sentAt: null, errors: 0, lastError: null };
-    this._timer = null;
-    this._run = 0; // bumped by stop(); a poll loop from an earlier start() sees it and ends
+    this.poller = new FeedPoller(API_URL, POLL_MS, (data) => this._ingest(data.ac || []));
     this._fleet = [];
   }
 
   start() {
-    if (this._timer !== null) return;
-    const run = ++this._run;
-    const poll = async () => {
-      const t0 = performance.now();
-      try {
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 10000);
-        const res = await fetch(API_URL, { signal: ctrl.signal });
-        clearTimeout(to);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (run !== this._run) return;
-        this._ingest(data.ac || []);
-        this.feedOk = true;
-        Object.assign(this.feed, {
-          pollMs: performance.now() - t0, lastOkAt: performance.now(),
-          sentAt: num(data.now), errors: 0, lastError: null,
-        });
-        this._timer = setTimeout(poll, POLL_MS);
-      } catch (err) {
-        if (run !== this._run) return;
-        this.feedOk = false;
-        this.feed.errors++;
-        this.feed.lastError = err.name === 'AbortError' ? 'timeout' : err.message;
-        this._timer = setTimeout(poll, ERROR_RETRY_MS);
-      }
-    };
-    this._timer = 0; // non-null marks "running" before the first timeout id exists
-    poll();
+    this.poller.start();
   }
 
   stop() {
-    clearTimeout(this._timer);
-    this._timer = null;
-    this._run++;
+    this.poller.stop();
   }
 
   _ingest(list) {
@@ -172,6 +138,11 @@ export class LiveTraffic {
       ac.update(dt, time);
       ac.visual.trail.update(camera, colorOf(ac.info));
     }
+  }
+
+  /** Feed health for the HUD; see FeedPoller.health. */
+  get feed() {
+    return this.poller.health;
   }
 
   get count() {
