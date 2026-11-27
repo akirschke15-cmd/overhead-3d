@@ -7,7 +7,9 @@ Real-time visualization of the aircraft overhead — Reston/Arlington, VA by def
 - `ceiling.html` — zenith all-sky view for a ceiling-mounted projector: the planes currently
   inside the cone of sky above you, live ADS-B by default
 
-Live data: [airplanes.live](https://airplanes.live) (fetched client-side, no API key).
+Live data: [adsb.fi](https://adsb.fi) open data, for personal non-commercial use. adsb.fi cannot be
+read from a browser page directly, so both pages fetch it through the small relay in `relay/`
+(a Vercel function that adds CORS for this site and caches each answer for 2 seconds).
 No build step — plain ES modules with vendored three.js.
 
 ## Run locally

@@ -1,10 +1,17 @@
-// FeedPoller: the polite polling loop both pages use against airplanes.live.
-// The API is free and rate-limited per network, and a browser cannot tell a refusal
-// (HTTP 403 without CORS headers) from an outage: both surface as "Failed to fetch".
-// So every failure backs off, and a page nobody is looking at does not poll at all.
+// Live feed access for both pages. Data is adsb.fi open data, reached through the relay in
+// relay/ because adsb.fi sends no CORS headers; see relay/api/point.js for the terms.
+// A browser cannot tell a refusal from an outage (both surface as "Failed to fetch"), so
+// every failure backs off, and a page nobody is looking at does not poll at all.
 const FIRST_RETRY_MS = 6000;
 const MAX_RETRY_MS = 5 * 60 * 1000;
 const TIMEOUT_MS = 10000;
+
+const RELAY = 'https://overhead-3d-relay.vercel.app';
+
+/** Feed URL for aircraft within distNm nautical miles (max 50) of a point. */
+export function feedUrl(lat, lon, distNm) {
+  return `${RELAY}/api/point?lat=${lat}&lon=${lon}&dist=${distNm}`;
+}
 
 /** Delay before the retry that follows the nth consecutive failure: 6 s, 12 s, 24 s ... capped at 5 min. */
 export function retryDelay(errors) {

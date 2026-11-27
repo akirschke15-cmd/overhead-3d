@@ -1,0 +1,6 @@
+{
+  "name": "overhead-3d-relay",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "22.x" }
+}

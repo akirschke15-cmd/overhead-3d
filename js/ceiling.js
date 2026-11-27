@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { CENTER, MI_PER_DEG_LAT, MI_PER_DEG_LON, FT_PER_MI } from './geo.js';
 import { Traffic } from './traffic.js';
 import { classOf, SILHOUETTES } from './classes.js';
-import { FeedPoller } from './feed.js';
+import { FeedPoller, feedUrl } from './feed.js';
 
 // ---------- observer & URL params ----------
 const params = new URLSearchParams(location.search);
@@ -97,9 +97,9 @@ function headingVec(trackDeg) {
   return toScreen(Math.sin(a), -Math.cos(a), _hv);
 }
 
-// ---------- live feed (airplanes.live, centered on the observer) ----------
+// ---------- live feed (adsb.fi via the relay, centered on the observer) ----------
 const LIVE_RADIUS_NM = 30;
-const LIVE_URL = `https://api.airplanes.live/v2/point/${OBS.lat}/${OBS.lon}/${LIVE_RADIUS_NM}`;
+const LIVE_URL = feedUrl(OBS.lat, OBS.lon, LIVE_RADIUS_NM);
 const POLL_MS = 5000;
 const STALE_MS = 20000;
 const liveMap = new Map(); // hex -> live aircraft

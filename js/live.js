@@ -1,12 +1,12 @@
-// Live ADS-B feed from airplanes.live — polls real traffic around the center and interpolates it
+// Live ADS-B feed (adsb.fi via the relay) — polls real traffic around the center and interpolates it
 import * as THREE from 'three';
 import { toWorld, CENTER } from './geo.js';
 import { AircraftVisual, altOf, colorOf, recordHistory, statusOf } from './aircraft.js';
 import { classOf } from './classes.js';
-import { FeedPoller } from './feed.js';
+import { FeedPoller, feedUrl } from './feed.js';
 
 const RADIUS_NM = 45; // ~52 statute miles, covers the 50mi ring
-const API_URL = `https://api.airplanes.live/v2/point/${CENTER.lat}/${CENTER.lon}/${RADIUS_NM}`;
+const API_URL = feedUrl(CENTER.lat, CENTER.lon, RADIUS_NM);
 const POLL_MS = 2000;
 const STALE_MS = 25000; // drop aircraft not seen for this long
 const EMERGENCY_SQUAWKS = new Set(['7500', '7600', '7700']);
